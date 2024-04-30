@@ -1,14 +1,21 @@
-import fetch, { Blob, FormData } from 'node-fetch'
+import fetch, {Blob, FormData} from 'node-fetch'
 import fs from 'fs'
 import _ from 'lodash'
+import path from 'path'
+import os from 'os'
+import fsPromises from 'fs/promises'
+
 let kg = 1
 const bq = {}
 try {
   const res = JSON.parse(fs.readFileSync('plugins/earth-k-plugin/resources/bq.json'))
   for (const v of Object.values(res)) {
-    for (const i of v.keywords) { bq[i] = v }
+    for (const i of v.keywords) {
+      bq[i] = v
+    }
   }
-} catch {}
+} catch {
+}
 const reg = new RegExp(`^(${Object.keys(bq).join('|')})`)
 const url = 'http://124.70.4.227:8085/memes/'
 
@@ -19,20 +26,13 @@ export class dailyNoteByWidget extends plugin {
       dsc: '土块表情包',
       event: 'message',
       priority: 1145,
-      rule: [
-        {
-          reg: '^#?土块表情开启$',
-          fnc: 'bqkq'
-        },
-        {
-          reg: '^#?土块表情关闭$',
-          fnc: 'bqgb'
-        },
-        {
-          reg: '^#?土块表情列表$',
-          fnc: 'bqlb'
-        }
-      ]
+      rule: [{
+        reg: '^#?土块表情开启$', fnc: 'bqkq'
+      }, {
+        reg: '^#?土块表情关闭$', fnc: 'bqgb'
+      }, {
+        reg: '^#?土块表情列表$', fnc: 'bqlb'
+      }]
     })
   }
 
@@ -77,7 +77,11 @@ export class dailyNoteByWidget extends plugin {
       if (e.getReply) {
         reply = await e.getReply()
       } else if (e.source) {
-        if (e.group?.getChatHistory) { reply = (await e.group.getChatHistory(e.source.seq, 1)).pop() } else if (e.friend?.getChatHistory) { reply = (await e.friend.getChatHistory(e.source.time, 1)).pop() }
+        if (e.group?.getChatHistory) {
+          reply = (await e.group.getChatHistory(e.source.seq, 1)).pop()
+        } else if (e.friend?.getChatHistory) {
+          reply = (await e.friend.getChatHistory(e.source.time, 1)).pop()
+        }
       }
       if (reply?.message) {
         for (const i of reply.message) {
@@ -88,25 +92,82 @@ export class dailyNoteByWidget extends plugin {
         }
       }
 
-      const imgUrl = e.img?.[0] || await pick?.getAvatarUrl?.() || `http://q2.qlogo.cn/headimg_dl?dst_uin=${id}&spec=5`
-      const imgRes = await fetch(imgUrl)
-      const buffer = Buffer.from(await imgRes.arrayBuffer())
+      let buffer
+      // 判断如果为QQNT
+      if (e.bot?.version?.name === 'chronocat') {
+        let msg = e.message
+        // 判断是否是回复消息
+        if (e.source) {
+          msg = (await e.group.getChatHistory(e.source.seq, 1))[0].message
+        }
+        // {"type":"image","url":"https://gchat.qpic.cn/gchatpic_new/0/0-0-90018F5409162A253D6ACF704FD7F1EE/0","file":"90018f5409162a253d6acf704fd7f1ee.image"}
+        let imageObj = msg.find(item => item.type === 'image')
+        Bot.logger.info(imageObj)
+        if (!imageObj) {
+          let imgUrl = await pick?.getAvatarUrl?.() || `http://q2.qlogo.cn/headimg_dl?dst_uin=${id}&spec=5`
+          let imgRes = await fetch(imgUrl)
+          buffer = Buffer.from(await imgRes.arrayBuffer())
+        } else {
+          let imagePath = await this.getQQNTImagePath(e, imageObj.file)
+          if (!imagePath) {
+            return
+          }
+          Bot.logger.info(imagePath)
+          buffer = await fsPromises.readFile(imagePath)
+        }
+      } else {
+        let imgUrl = e.img?.[0] || await pick?.getAvatarUrl?.() || `http://q2.qlogo.cn/headimg_dl?dst_uin=${id}&spec=5`
+        let imgRes = await fetch(imgUrl)
+        buffer = Buffer.from(await imgRes.arrayBuffer())
+      }
       formData.append('images', new Blob([buffer]))
     }
 
     if (item.params.min_texts != 0) {
-      for (let i = 0; i < keyword.length - 1; i++) { formData.append('texts', keyword[i + 1]) }
+      for (let i = 0; i < keyword.length - 1; i++) {
+        formData.append('texts', keyword[i + 1])
+      }
     }
 
     let args
-    if (item.params.min_texts == 0 & keyword[1] != undefined) { args = handleArgs(item.key, keyword[1], [{ text: name, gender: 'unknown' }]) } else { args = handleArgs(item.key, '', [{ text: name, gender: 'unknown' }]) }
-    if (args) { formData.set('args', args) }
+    if (item.params.min_texts == 0 & keyword[1] != undefined) {
+      args = handleArgs(item.key, keyword[1], [{ text: name, gender: 'unknown' }])
+    } else {
+      args = handleArgs(item.key, '', [{ text: name, gender: 'unknown' }])
+    }
+    if (args) {
+      formData.set('args', args)
+    }
 
     const res = await fetch(`${url}${item.key}/`, { method: 'POST', body: formData })
-    if (res.status > 299) { return e.reply(`该表情至少需要${item.params.min_images}张图片，${item.params.min_texts}个文字描述`, true) }
+    if (res.status > 299) {
+      return e.reply(`该表情至少需要${item.params.min_images}张图片，${item.params.min_texts}个文字描述`, true)
+    }
 
     const resultBuffer = Buffer.from(await res.arrayBuffer())
     return e.reply(segment.image(resultBuffer))
+  }
+
+  async getQQNTImagePath (e, fileName) {
+    // 2024-04
+    const yearMonth = new Date().toISOString().slice(0, 7)
+    // C:/Users/yshs/Documents/Tencent%20Files/377178599/nt_qq/nt_data/Pic/2024-04/Thumb
+    let QQNTTempPath = path.join(os.homedir(), 'Documents', 'Tencent Files', e.self_id.toString(), 'nt_qq', 'nt_data', 'Pic', yearMonth, 'Thumb')
+    let fileList = fs.readdirSync(QQNTTempPath)
+    // 找到以fileName开头的文件
+    let targetName = fileList.find(item => item.startsWith(fileName.split('.')[0]))
+    if (!targetName) {
+      QQNTTempPath = path.join(os.homedir(), 'Documents', 'Tencent Files', e.self_id.toString(), 'nt_qq', 'nt_data', 'Pic', yearMonth, 'Ori')
+      fileList = fs.readdirSync(QQNTTempPath)
+      targetName = fileList.find(item => item.startsWith(fileName.split('.')[0]))
+    }
+    if (targetName) {
+      let targetPath = path.join(QQNTTempPath, targetName)
+      return targetPath
+    } else {
+      Bot.logger.error('QQNT图片不存在')
+      return null
+    }
   }
 }
 
@@ -121,10 +182,7 @@ function handleArgs (key, args, userInfos) {
       break
     case 'symmetric': {
       const directionMap = {
-        左: 'left',
-        右: 'right',
-        上: 'top',
-        下: 'bottom'
+        左: 'left', 右: 'right', 上: 'top', 下: 'bottom'
       }
       argsObj = { direction: directionMap[args.trim()] || 'left' }
       break
@@ -143,9 +201,7 @@ function handleArgs (key, args, userInfos) {
       break
     case 'always': {
       const modeMap = {
-        '': 'normal',
-        循环: 'loop',
-        套娃: 'circle'
+        '': 'normal', 循环: 'loop', 套娃: 'circle'
       }
       argsObj = { mode: modeMap[args] || 'normal' }
       break
@@ -153,9 +209,7 @@ function handleArgs (key, args, userInfos) {
     case 'gun':
     case 'bubble_tea': {
       const directionMap = {
-        左: 'left',
-        右: 'right',
-        两边: 'both'
+        左: 'left', 右: 'right', 两边: 'both'
       }
       argsObj = { position: directionMap[args.trim()] || 'right' }
       break
@@ -163,8 +217,7 @@ function handleArgs (key, args, userInfos) {
   }
   argsObj.user_infos = userInfos.map(u => {
     return {
-      name: _.trim(u.text, '@'),
-      gender: u.gender
+      name: _.trim(u.text, '@'), gender: u.gender
     }
   })
   return JSON.stringify(argsObj)
